@@ -1,0 +1,379 @@
+---
+title: "DESEQ2"
+author: "Seoyeon Lee"
+date: "10/21/2019"
+output: html_document
+---
+### Call packages
+```{r}
+library(DESeq2)
+library(ggplot2)
+library(apeglm)
+library(IHW)
+library(pheatmap)
+library(vsn)
+library(RColorBrewer)
+library(pcaExplorer)
+library(ggrepel)
+library(extrafont)
+library(ggpmisc)
+```
+
+### Counts Table and Metadata setup
+```{r}
+cts<-as.matrix(read.csv("kidney.counts.csv",header = TRUE, row.names=1))
+coldata<-read.csv("kidney.sample.info.csv",header = TRUE,row.names=1)
+coldata<-coldata[,c("Age","Sex","Batch")]
+head(cts)
+head(coldata)
+dds <- DESeqDataSetFromMatrix(countData=cts,
+                              colData=coldata,
+                              design=~Sex+Batch+Age)
+```
+
+### Pre-filtering
+```{r}
+keep <- rowSums(counts(dds)) >= 10
+dds <- dds[keep, ]
+```
+
+
+### Run DESeq
+```{r}
+dds <- DESeq(dds, test="LRT", reduced=~Sex+Smoked)
+resultsNames(dds)
+res <- results(dds)
+res
+```
+
+
+### Log fold change shrinkage  
+Looks at the largest fold changes, shrinks imprecise ones
+```{r}
+resultsNames(dds)
+resLFC <- lfcShrink(dds, coef="Sex_M_vs_F", type="apeglm")
+resLFC
+```
+
+### Order results table by the smallest p value
+```{r}
+resOrdered <- res[order(res$pvalue), ]
+summary(res)
+sum(res$padj < 0.1, na.rm=TRUE)
+```
+
+### Independent hypothesis weighting  
+p value filtering to weight hypotheses to optimize power
+```{r}
+resIHW <- results(dds, filterFun=ihw)
+summary(resIHW)
+sum(resIHW$padj < 0.1, na.rm=TRUE)
+metadata(resIHW)$ihwResult
+```
+
+### MA-plot 
+Gives overview for an experiment. x-axis is the average expression over all samples, y-axis is the log2 fold change between treatment and control.
+```{r}
+plotMA(res, ylim=c(-2,2))
+plotMA(resLFC, ylim=c(-2,2)) #with shrunken data: removed noise associated with log2 fold changes from low count genes
+idx <- identify(res$baseMean, res$log2FoldChange)
+```
+After calling MA plot, function identify lets us detect the row number of individual enes by clicking on the plot. We can then recover the gene identifiers by saving the resulting indices.  
+
+
+### Plot counts
+examine the counts of reads for a single gene across the groups.
+```{r}
+stat_smooth_func_with_pval <- function(mapping = NULL, data = NULL,
+                                            geom = "smooth", position = "identity",
+                                            ...,
+                                            method = "auto",
+                                            formula = y ~ x,
+                                            se = TRUE,
+                                            n = 80,
+                                            span = 0.75,
+                                            fullrange = FALSE,
+                                            level = 0.95,
+                                            method.args = list(),
+                                            na.rm = FALSE,
+                                            show.legend = NA,
+                                            inherit.aes = TRUE,
+                                            xpos = NULL,
+                                            ypos = NULL,
+                                            xpos2 = NULL,
+                                            ypos2 = NULL) {
+  layer(
+    data = data,
+    mapping = mapping,
+    stat = StatSmoothFunc,
+    geom = geom,
+    position = position,
+    show.legend = show.legend,
+    inherit.aes = inherit.aes,
+    params = list(
+      method = method,
+      formula = formula,
+      se = se,
+      n = n,
+      fullrange = fullrange,
+      level = level,
+      na.rm = na.rm,
+      method.args = method.args,
+      span = span,
+      xpos = xpos,
+      ypos = ypos,
+      xpos2 = xpos2,
+      ypos2 = ypos2,
+      ...
+    )
+  )
+}
+
+StatSmoothFunc <- ggproto("StatSmooth", Stat,
+                          
+                          setup_params = function(data, params) {
+                            # Figure out what type of smoothing to do: loess for small datasets,
+                            # gam with a cubic regression basis for large data
+                            # This is based on the size of the _largest_ group.
+                            if (identical(params$method, "auto")) {
+                              max_group <- max(table(data$group))
+                              
+                              if (max_group < 1000) {
+                                params$method <- "loess"
+                              } else {
+                                params$method <- "gam"
+                                params$formula <- y ~ s(x, bs = "cs")
+                              }
+                            }
+                            if (identical(params$method, "gam")) {
+                              params$method <- mgcv::gam
+                            }
+                            
+                            params
+                          },
+                          
+                          compute_group = function(data, scales, method = "auto", formula = y~x,
+                                                   se = TRUE, n = 80, span = 0.75, fullrange = FALSE,
+                                                   xseq = NULL, level = 0.95, method.args = list(),
+                                                   na.rm = FALSE, xpos=NULL, ypos=NULL, 
+                                                   xpos2=NULL, ypos2=NULL) {
+                            if (length(unique(data$x)) < 2) {
+                              # Not enough data to perform fit
+                              return(data.frame())
+                            }
+                            
+                            if (is.null(data$weight)) data$weight <- 1
+                            
+                            if (is.null(xseq)) {
+                              if (is.integer(data$x)) {
+                                if (fullrange) {
+                                  xseq <- scales$x$dimension()
+                                } else {
+                                  xseq <- sort(unique(data$x))
+                                }
+                              } else {
+                                if (fullrange) {
+                                  range <- scales$x$dimension()
+                                } else {
+                                  range <- range(data$x, na.rm = TRUE)
+                                }
+                                xseq <- seq(range[1], range[2], length.out = n)
+                              }
+                            }
+                            # Special case span because it's the most commonly used model argument
+                            if (identical(method, "loess")) {
+                              method.args$span <- span
+                            }
+                            
+                            if (is.character(method)) method <- match.fun(method)
+                            
+                            base.args <- list(quote(formula), data = quote(data), weights = quote(weight))
+                            model <- do.call(method, c(base.args, method.args))
+                            
+                            m = model
+                            eq1 <- substitute(italic(y) == a + b %.% italic(x), 
+                                              list(a = format(coef(m)[[1]], digits = 3), 
+                                                   b = format(coef(m)[[2]], digits = 3)))
+                            
+                            eq2 <- substitute(italic(r)^2~"="~r2*","~~italic(p)~"="~pval, 
+                                              list(r2 = format(summary(m)$r.squared, digits = 3),
+                                                   pval = format(summary(m)$coef[2,4], digits = 3)))
+                            
+                            func_string1 = as.character(as.expression(eq1))
+                            func_string2 = as.character(as.expression(eq2))
+                            
+                            if(is.null(xpos)) xpos = min(data$x)*0.9
+                            if(is.null(ypos)) ypos = max(data$y)*1
+                            if(is.null(xpos2)) xpos2 = xpos
+                            if(is.null(ypos2)) ypos2 = max(data$y)*0.95
+                            
+                            data.frame(x = rbind(xpos, xpos2), 
+                                       y = rbind(ypos, ypos2), 
+                                       label = rbind(func_string1, func_string2))
+                            
+                          },
+                          
+                          required_aes = c("x", "y")
+)
+```
+
+# aging
+```{r}
+png(filename="RSPO4.png")
+d <- plotCounts(dds,"ENSG00000101282",intgroup="Age",returnData=TRUE)
+formula <- y ~ x
+ggplot(d, aes(x=Age, y=count)) +
+  geom_point(position=position_jitter(w=0.1,h=0),
+             color = "black",
+             size = 4) +
+  geom_smooth(method = "lm",
+              color = "black") +
+  scale_y_log10(name = "Normalized Count", breaks=c(25,100,400)) +
+  scale_x_continuous(name = "Age (yr)", breaks=c(20,30,40,50,60,70)) +
+  ggtitle("Aging RSPO4") +
+  theme_classic() +
+  theme(plot.title = element_text(hjust = 0.5, family = "Arial", face = "bold", size = 25, vjust = 2),
+        axis.text = element_text(size = 20, family = "Arial"),
+        axis.title = element_text(size = 20, family = "Arial")) +
+  stat_smooth_func_with_pval(geom = "text", method = "lm", hjust = 0, parse = TRUE, size = 6)
+  #stat_poly_eq(aes(label = paste(..eq.label.., ..rr.label.., sep = "~~~")), 
+  #             label.x.npc = 2, label.y.npc = 0.1,
+  #             formula = formula, parse = TRUE, size = 5)
+dev.off()
+```
+# gtex
+```{r}
+png(filename="gtex.lung.RSPO4.png")
+d <- plotCounts(dds,"ENSG00000101282.8",intgroup="Age",returnData=TRUE)
+ggplot(d, aes(x=Age, y=count)) +
+  geom_point(position=position_jitter(w=0.1,h=0),
+             color = "grey",
+             size = 4) +
+  geom_smooth(method = "lm", se = FALSE,
+              color = "black") +
+  scale_y_log10(name = "Normalized Count", breaks=c(25,100,400,1600)) +
+  scale_x_discrete(name = "Age (decade)") +
+  ggtitle("RSPO4 (GTEx Lung)") +
+  theme_classic() +
+  theme(plot.title = element_text(hjust = 0.5, family = "Arial", face = "bold"),
+        axis.text = element_text(size = 14, family = "Arial"),
+        axis.title = element_text(size = 14, family = "Arial")) +
+  stat_smooth_func_with_pval(geom = "text", method = "lm", hjust = 0, parse = TRUE, size = 6)
+  #stat_poly_eq(aes(label = paste(..eq.label.., ..rr.label.., sep = "~~~")), 
+  #             label.x.npc = 2, label.y.npc = 0.1,
+  #             formula = formula, parse = TRUE, size = 5)
+dev.off()
+```
+
+### More information on results columns
+```{r}
+mcols(res)$description
+```
+For a particular gene, a log2 fold change of -1 for "condition treated vs untreated" means that the treatment induces a multiplicative change in observed gene expression level of 2^-1=0.5 compared to the untreated condition. **If the variable of interest is continuous-valued, then the reported log2 fold change is per unit of that variable.**
+
+### Export results
+```{r}
+write.csv(as.data.frame(res),
+         file="Age.all.decade.results.csv")
+# export only the results which pass an adjusted p value threshold
+resSig <- subset(resOrdered, padj < 0.1)
+write.csv(as.data.frame(resSig),
+           file="Age.all.decade.resultsSig.csv")
+# export normaliz[ed counts
+normcounts <- counts(dds, normalize=TRUE)
+write.csv(as.data.frame(normcounts),
+          file="Age.all.decade.ncounts.csv")
+```
+
+## Spearman Correlation
+```{r}
+data <- read.csv("fgtex.sunNexposed.skin.ncounts.csv", header = TRUE, row.names=1)
+tdata <- as.data.frame(t(data))
+age <- read.csv("fgtex.sunNexposed.skin.sample.info.csv", header = TRUE, row.names = 1)
+spearmancorrel <- NULL
+spearmanpvalue <- NULL
+pearsoncorrel <- NULL
+pearsonpvalue <- NULL
+for(i in seq_along(colnames(tdata))) {
+  spearmancorrel[i] <- cor.test(tdata[,i], age$Decade, method = "spearman", exact = FALSE)$estimate
+  spearmanpvalue[i] <- cor.test(tdata[,i], age$Decade, method = "spearman", exact = FALSE)$p.value
+  pearsoncorrel[i] <- cor.test(tdata[,i], age$Decade, method = "pearson", exact = FALSE)$estimate
+  pearsonpvalue[i] <- cor.test(tdata[,i], age$Decade, method = "pearson", exact = FALSE)$p.value
+}
+spearman.correl <- as.data.frame(spearmancorrel)
+spearman.pvalue <- as.data.frame(spearmanpvalue)
+pearson.correl <- as.data.frame(pearsoncorrel)
+pearson.pvalue <- as.data.frame(pearsonpvalue)
+length(rownames(data))==length(rownames(spearman.correl))
+length(rownames(data))==length(rownames(spearman.pvalue))
+length(rownames(data))==length(rownames(pearson.correl))
+length(rownames(data))==length(rownames(pearson.pvalue))
+
+findata <- mutate(data, spearman.correl)
+findata <- mutate(findata, spearman.pvalue)
+findata <- mutate(findata, pearson.correl)
+findata <- mutate(findata, pearson.pvalue)
+row.names(findata) <- row.names(data)
+findata <- findata[order(findata$pearsonpvalue), ]
+write.csv(as.data.frame(findata), "fgtex.sunNexposed.skin.ncounts.CC.csv")
+```
+
+## Data transformations and Visualization
+### Count data transformations
+For downstream analyses such as visualization or clustering, it is useful to work with transformed versions of the count data.  
+The most obvious choice of transformation is the logarithm. Since count values for a gene can be zero in some conditions and non-zero in others, some advocate the use of pseudocounts (adding a constant so zero isn't zero anymore).  
+DESeq discusses two alternative approaches: VST and rlog.  
+**The point of these two transformations is to remove the dependence of the variance on the mean, particularly the high variance of the logarithm of count data when the mean is low.**  
+After transformation, we expect to have flattened out the experiment-wide trend.  
+**It is those genes with row variance above the trend which will allow us to cluster samples into interesting groups.**
+```{r}
+vsd <- vst(dds, blind=FALSE)
+head(assay(vsd),3)
+ntd <- normTransform(dds)
+#sd of transformed data across samples against the mean
+meanSdPlot(assay(ntd)) #using the regular shifted logarithm transformation
+meanSdPlot(assay(vsd)) #using the variance stabilizing transformation
+```
+
+## Data quality assessment by sample clustering and visualization
+### Heatmap of the count matrix
+```{r}
+ncounts <- read.csv("F.pc.ncounts.noFactor.csv", row.names = 1, header = TRUE)
+geneset <- c("CDKN2A","FRZB")
+geneset_counts <- ncounts[ncounts$gene_name %in% geneset,]
+geneset_counts <- data.frame(geneset_counts, row.names = 1)
+geneset_counts <- as.matrix(geneset_counts)
+select <- order(rowMeans(geneset_counts),
+                decreasing=TRUE)
+df <- as.data.frame(colData(dds)[,c("Age","Sex")])
+pheatmap(geneset_counts, cluster_rows=FALSE, show_rownames=TRUE, cluster_cols=TRUE, annotation_col=df, fontsize=5)
+pheatmap(assay(vsd)[select, ], cluster_rows=FALSE, show_rownames=FALSE, cluster_cols=FALSE, annotation_col=df, fontsize=3)
+```
+
+
+
+### Heatmap of the sample-to-sample distances
+```{r}
+sampleDists <- dist(t(assay(vsd)))
+sampleDistMatrix <- as.matrix (sampleDists)
+rownames(sampleDistMatrix) <- paste(vsd$"Age", vsd$"Sex", sep="-")
+colnames(sampleDistMatrix) <- NULL
+colors <- colorRampPalette((rev(brewer.pal(9, "Blues"))))(255)
+pheatmap(sampleDistMatrix,
+         clustering_distance_rows=sampleDists,
+         clustering_distance_cols=sampleDists,
+         col=colors)
+```
+
+### Principal component plot of the samples
+```{r}
+plotPCA(vsd, intgroup=c("Sex","Ever.Smoked"))
+?plotPCA
+```
+
+## pcaExplorer
+### Launch
+```{r}
+pcaExplorer(dds=dds,dst=vsd)
+```
+
