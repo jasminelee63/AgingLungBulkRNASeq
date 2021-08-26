@@ -1,0 +1,105 @@
+---
+title: "Skin Music"
+output: html_document
+---
+
+```{r}
+library(Seurat)
+library(SingleR)
+library(MuSiC)
+
+# Load data
+sample4.data <- read.table("GSM4430462_MS.sample4.clean.data.txt.gz", row.names = 1, header = TRUE, as.is = TRUE, sep = ",")
+sample4.data
+sample4 <- CreateSeuratObject(counts = sample4.data, assay = "RNA", min.cells = 3, min.genes = 200, project = "skin")
+
+sample6.data <- read.table("GSM4430464_MS.sample6.clean.data.txt.gz", row.names = 1, header = TRUE, as.is = TRUE, sep = ",")
+sample6 <- CreateSeuratObject(counts = sample6.data, assay = "RNA", min.cells = 3, min.genes = 200, project = "skin")
+
+sample8.data <- read.table("GSM4430466_MS.sample8.clean.data.txt.gz", row.names = 1, header = TRUE, as.is = TRUE, sep = ",")
+sample8 <- CreateSeuratObject(counts = sample8.data, assay = "RNA", min.cells = 3, min.genes = 200, project = "skin")
+
+sample9.data <- read.table("GSM4430467_MS.sample9.clean.data.txt.gz", row.names = 1, header = TRUE, as.is = TRUE, sep = ",")
+sample9 <- CreateSeuratObject(counts = sample9.data, assay = "RNA", min.cells = 3, min.genes = 200, project = "skin")
+
+sample10.data <- read.table("GSM4430468_MS.sample10.clean.data.txt.gz", row.names = 1, header = TRUE, as.is = TRUE, sep = ",")
+sample10 <- CreateSeuratObject(counts = sample10.data, assay = "RNA", min.cells = 3, min.genes = 200, project = "skin")
+
+sample12.data <- read.table("GSM4430470_MS.sample12.clean.data.txt.gz", row.names = 1, header = TRUE, as.is = TRUE, sep = ",")
+sample12 <- CreateSeuratObject(counts = sample12.data, assay = "RNA", min.cells = 3, min.genes = 200, project = "skin")
+
+sample13.data <- read.table("GSM4430471_MS.sample13.clean.data.txt.gz", row.names = 1, header = TRUE, as.is = TRUE, sep = ",")
+sample13 <- CreateSeuratObject(counts = sample13.data, assay = "RNA", min.cells = 3, min.genes = 200, project = "skin")
+
+sample17.data <- read.table("GSM4430475_MS.sample17.clean.data.txt.gz", row.names = 1, header = TRUE, as.is = TRUE, sep = ",")
+sample17 <- CreateSeuratObject(counts = sample17.data, assay = "RNA", min.cells = 3, min.genes = 200, project = "skin")
+
+skin <- merge(sample4, c(sample6, sample8, sample9, sample10, sample12, sample13, sample17))
+```
+
+```{r}
+# Seurat Workflow
+# skip normalization since it's a normalized matrix
+skin <- FindVariableFeatures(skin, selection.method = "vst", nfeatures = 2000)
+all.genes <- rownames(skin)
+skin <- ScaleData(skin, features = all.genes)
+skin <- RunPCA(skin)
+skin <- FindNeighbors(skin, dims= 1:10)
+skin <- FindClusters(skin, resolution = 0.5)
+skin <- RunTSNE(skin, check_duplicates = FALSE)
+TSNEPlot(skin, reduction = "tsne")
+```
+
+```{r}
+# SingleR
+skinSC <- as.SingleCellExperiment(skin)
+Encode <- BlueprintEncodeData()
+pred.skinSC <- SingleR(test = skinSC,
+                       ref = Encode,
+                       labels = Encode$label.main)
+skin[["SingleR.labels"]] <- pred.skinSC$labels
+TSNEPlot(skin, pt.size = 0.5, group.by = "SingleR.labels")
+```
+
+```{r}
+# MuSiC
+# construct bulk gtex skin
+exprs <- as.matrix(read.csv("fgtex.sunexposed.skin.ncounts.geneids.csv", header = TRUE, row.names = 1))
+pData <- read.csv("fgtex.sunexposed.skin.sample.info.csv", header = TRUE, row.names = 1)
+all(rownames(pData) == colnames(exprs))
+gtex.metadata <- data.frame(labelDescription = 
+                              c("Sex",
+                                "Age",
+                                "Decade",
+                                "Hardy Scale",
+                                "Batch"),
+                            row.names = c("Sex",
+                                "Age",
+                                "Decade",
+                                "Death",
+                                "Batch"))
+phenoData <- new("AnnotatedDataFrame",
+                 data = pData,
+                 varMetadata = gtex.metadata)
+gtexexp <- ExpressionSet(assayData = exprs,
+                         phenoData = phenoData)
+# construct single cell skin
+skinpheno <- skin@meta.data
+skinmtx <- skin[["RNA"]]@counts
+skinmtx <- as.matrix(skinmtx)
+scexp <- ExpressionSet(skinmtx,
+                       phenoData = annotatedDataFrameFrom(skinmtx, byrow = FALSE))
+phenoData(scexp) <- AnnotatedDataFrame(skinpheno)
+
+# Cell Deconvolution
+library(xbioc)
+skinDeconv <- music_prop(bulk.eset = gtexexp,
+                         sc.eset = scexp,
+                         clusters = 'SingleR.labels',
+                         samples = 'orig.ident')
+write.csv(as.data.frame(skinDeconv$Est.prop.weighted), "skin.deconv.weighted.prop.csv")
+write.csv(as.data.frame(skinDeconv$Est.prop.allgene), "skin.deconv.all.prop.csv")
+
+skinplot <- merge(as.data.frame(skinDeconv$Est.prop.weighted), pData)
+skinplot
+```
