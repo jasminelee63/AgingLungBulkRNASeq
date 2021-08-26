@@ -1,0 +1,66 @@
+---
+title: "Travaglini Cell deconvolution"
+output: html_document
+---
+
+```{r}
+# pre-processing the data
+Trav.data <- read.table("../Travaglini et al/krasnow_hlca_10x_UMIs.csv", row.names = 1, header = TRUE, as.is = TRUE, sep = ",")
+View(Trav.data)
+Trav.meta <- read.csv("../Travaglini et al/krasnow_hlca_10x_metadata.csv", row.names = 1)
+Trav.meta
+Trav.data <- as.matrix(Trav.data)
+Trav <- CreateSeuratObject(Trav.data, project = "Deconv", assay = "RNA", min.cells = 3, min.features = 200, meta.data = Trav.meta)
+Trav@meta.data
+table(Trav$free_annotation)
+
+Trav <- subset(Trav, subset = nFeature_RNA > 200 & nFeature_RNA < 2500)
+Trav <- FindVariableFeatures(Trav, selection.method = "vst", nfeatures = 2000)
+all.genes <- rownames(Trav)
+Trav <- ScaleData(Trav, features = all.genes)
+Trav <- RunPCA(Trav)
+ElbowPlot(Trav)
+Trav <- FindNeighbors(Trav, dims= 1:20)
+Trav <- FindClusters(Trav, resolution = 0.5)
+Trav <- RunTSNE(Trav, dims = 1:20)
+TSNEPlot(Trav, reduction = "tsne", group.by = "free_annotation")
+```
+
+
+```{r}
+## MuSiC setup cell deconvolution
+# Construct bulk ExpressionSet
+# expression data
+exprs <- as.matrix(read.csv("/home/liam/bulk/fgtex.lung.ncounts.genesymbol.csv", header = TRUE, row.names = 1))
+# phenotype data
+pData <- read.csv("/home/liam/bulk/fgtex.lung.sample.info.csv", header = TRUE, row.names = 1)
+all(rownames(pData)==colnames(exprs))
+metadata <- data.frame(labelDescription = 
+                         c("Sex",
+                           "Age",
+                           "Decade",
+                           "Death",
+                           "Batch"),
+                       row.names = c("Sex",
+                           "Age",
+                           "Decade",
+                           "Death",
+                           "Batch"))
+phenoData <- new("AnnotatedDataFrame",
+                 data = pData, varMetadata = metadata)
+bulkexp <- ExpressionSet(assayData = exprs, phenoData = phenoData)
+
+# Construct sc ExpressionSet
+Travpheno <- Trav@meta.data
+TravMtx <- Trav[["RNA"]]@counts
+TravMtx <- as.matrix(TravMtx)
+scexp <- ExpressionSet(TravMtx, phenoData=annotatedDataFrameFrom(TravMtx, byrow=FALSE))
+phenoData(scexp) <- AnnotatedDataFrame(Travpheno)
+
+Deconv <- music_prop(bulk.eset = bulkexp, sc.eset = scexp, clusters = 'free_annotation', samples = 'orig.ident')
+
+write.csv(as.data.frame(Deconv$Est.prop.weighted), "trav.deconv.weighted.all.prop.csv")
+write.csv(as.data.frame(Deconv$Est.prop.allgene), "trav.deconv.all.prop.csv")
+
+```
+
