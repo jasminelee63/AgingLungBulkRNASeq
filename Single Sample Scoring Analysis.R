@@ -9,11 +9,11 @@ library(ggpubr)
 
 #For Singscore: start with RAW COUNTS table. You will need sample information and will have to
 #transform the data so that the row names are in HGNC symbols, and no duplicate gene names.
-#Will transform into tpm. Will need gene sets file.
+#Will transform into tpm. Will need gene sets file containing each gene set in each column.
 
 
 ## GTEx Data Transformation for singscore
-#Extracted pentiles from sample.info
+#Extracted quintiles samples from sample.info
 #Extract corresponding counts
 df <- read.csv("fgtex.sunNexposed.skin.counts.csv", header = TRUE, row.names = 1)
 names <- read.csv("gtexsunNexposed.skin.pent.sample.info.csv", header = TRUE)
@@ -22,6 +22,7 @@ names <- as.character(names)
 df <- as.data.frame(df)
 sing <- df[colnames(df) %in% names == TRUE]
 write.csv(as.data.frame(sing), "gtexsunNexposed.skin.pent.counts.csv")
+
 #Converted to HGNC symbols in excel
 #Added Gene lengths
 #Remove duplicate genes
@@ -42,6 +43,7 @@ write.csv(as.data.frame(tpm), file = "age.pent.tpm.csv")
 #Gene Expression Data
 #--------------------------------------------------------------------------
 #exptpm <- read.csv("age.pent.tpm.csv", header = TRUE, row.names = 1)
+
 ##Sample Scoring
 #Rank genes: genes are ranked by increasing mRNA abundance
 rankData <- rankGenes(tpm)
