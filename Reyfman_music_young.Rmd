@@ -58,6 +58,15 @@ Reyfman[["SingleR.labels"]] <- pred.ReyfmanSC$labels
 #table(pred.ReyfmanSC$labels)
 #TSNEPlot(Reyfman, label = FALSE, pt.size = 0.5, group.by = "SingleR.labels")
 
+#Epithelial DE expression (compared to all other cells)
+EpiVer <- FindMarkers(Reyfman, ident.1 = "Epithelial cells", group.by = "SingleR.labels")
+View(EpiVer)
+write.csv(EpiVer, sep = "", "/home/liam/Reyfman/Epi.csv")
+#Fibroblast DE expression
+FibVer <- FindMarkers(Reyfman, ident.1 = "Fibroblasts", group.by = "SingleR.labels")
+View(FibVer)
+write.csv(FibVer, sep = "", "/home/liam/Reyfman/Fib.csv")
+
 ## Construct bulk ExpressionSet
 ## expression data
 exprs <- as.matrix(read.csv("fgtex.lung.ncounts.genesymbol.csv", header = TRUE, row.names = 1))
